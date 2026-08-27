@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: sanmar-connector
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: SANMAR_SFTP_HOST
+        value: ftp.sanmar.com
+      - key: SANMAR_SFTP_PORT
+        value: "2200"
+      - key: SANMAR_SFTP_USERNAME
+        sync: false
+      - key: SANMAR_SFTP_PASSWORD
+        sync: false
+      - key: SANMAR_EPDD_REMOTE_PATH
+        value: /SanMar_EPDD.csv
+      - key: SANMAR_DIP_REMOTE_PATH
+        value: /sanmar_dip.txt
+      - key: SANMAR_CACHE_DIR
+        value: /tmp/sanmar
