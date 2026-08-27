@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+SanMar_EPDD.csv
+sanmar_dip.txt
+*.part
