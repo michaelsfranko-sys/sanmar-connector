@@ -1,17 +1,18 @@
 import csv
 import os
 import shutil
+import threading
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 import paramiko
-from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Query, Response, status
 
 app = FastAPI(
     title="SanMar Connector",
-    version="0.2.0",
+    version="0.3.0",
     description="Private API for searching SanMar EPDD product data and sanmar_dip inventory data.",
 )
 
@@ -19,10 +20,19 @@ CACHE_DIR = Path(os.getenv("SANMAR_CACHE_DIR", "/tmp/sanmar"))
 EPDD_LOCAL = CACHE_DIR / "SanMar_EPDD.csv"
 DIP_LOCAL = CACHE_DIR / "sanmar_dip.txt"
 
+_refresh_lock = threading.Lock()
+_refresh_state = {
+    "state": "idle",
+    "started_at": None,
+    "finished_at": None,
+    "error": None,
+    "epdd_cached": EPDD_LOCAL.exists(),
+    "dip_cached": DIP_LOCAL.exists(),
+}
 
-class RefreshResult(BaseModel):
-    epdd_downloaded: bool
-    dip_downloaded: bool
+
+def _utc_now():
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _settings():
@@ -39,7 +49,7 @@ def _settings():
 def _require_credentials():
     s = _settings()
     if not s["username"] or not s["password"]:
-        raise HTTPException(status_code=500, detail="SanMar SFTP credentials are not configured.")
+        raise RuntimeError("SanMar SFTP credentials are not configured.")
     return s
 
 
@@ -74,10 +84,17 @@ def _resolve_remote_path(sftp, configured_path: str) -> str:
             pass
 
     target_name = Path(configured_path).name.lower()
-    for directory in [".", "/"]:
+    parent = str(Path(configured_path).parent).replace("\\", "/")
+    search_dirs = [".", "/"]
+    if parent not in ("", "."):
+        search_dirs.extend([parent, "/" + parent.lstrip("/")])
+
+    for directory in search_dirs:
         for name in _safe_listdir(sftp, directory):
             if name.lower() == target_name:
-                return name if directory == "." else f"/{name}"
+                if directory in (".", ""):
+                    return name
+                return f"{directory.rstrip('/')}/{name}"
 
     visible = sorted(set(_safe_listdir(sftp, ".") + _safe_listdir(sftp, "/")))
     raise FileNotFoundError(
@@ -89,31 +106,59 @@ def _download_sftp_file(sftp, remote_path: str, local_path: Path):
     resolved_path = _resolve_remote_path(sftp, remote_path)
     local_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = local_path.with_suffix(local_path.suffix + ".part")
+    if temp_path.exists():
+        temp_path.unlink()
     sftp.get(resolved_path, str(temp_path))
     shutil.move(str(temp_path), str(local_path))
     return resolved_path
 
 
-def refresh_files() -> RefreshResult:
+def refresh_files():
     s, transport, sftp = _open_sftp()
     try:
         _download_sftp_file(sftp, s["epdd_path"], EPDD_LOCAL)
         _download_sftp_file(sftp, s["dip_path"], DIP_LOCAL)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"SanMar SFTP refresh failed: {type(exc).__name__}: {exc}") from exc
     finally:
         try:
             sftp.close()
         finally:
             transport.close()
-    return RefreshResult(epdd_downloaded=EPDD_LOCAL.exists(), dip_downloaded=DIP_LOCAL.exists())
+
+
+def _refresh_worker():
+    with _refresh_lock:
+        _refresh_state.update({
+            "state": "running",
+            "started_at": _utc_now(),
+            "finished_at": None,
+            "error": None,
+            "epdd_cached": EPDD_LOCAL.exists(),
+            "dip_cached": DIP_LOCAL.exists(),
+        })
+        try:
+            refresh_files()
+            _refresh_state.update({
+                "state": "completed",
+                "finished_at": _utc_now(),
+                "epdd_cached": EPDD_LOCAL.exists(),
+                "dip_cached": DIP_LOCAL.exists(),
+            })
+        except Exception as exc:
+            _refresh_state.update({
+                "state": "failed",
+                "finished_at": _utc_now(),
+                "error": f"{type(exc).__name__}: {exc}",
+                "epdd_cached": EPDD_LOCAL.exists(),
+                "dip_cached": DIP_LOCAL.exists(),
+            })
 
 
 def ensure_cache():
     if not EPDD_LOCAL.exists() or not DIP_LOCAL.exists():
-        refresh_files()
+        raise HTTPException(
+            status_code=503,
+            detail="SanMar data is not cached yet. POST /refresh, then check GET /refresh-status until state is completed.",
+        )
 
 
 def _norm(value: Optional[str]) -> str:
@@ -207,23 +252,26 @@ def search_dip(style: str, color: Optional[str] = None, size: Optional[str] = No
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "epdd_cached": EPDD_LOCAL.exists(), "dip_cached": DIP_LOCAL.exists()}
+    return {
+        "status": "ok",
+        "cache_dir": str(CACHE_DIR),
+        "epdd_cached": EPDD_LOCAL.exists(),
+        "dip_cached": DIP_LOCAL.exists(),
+    }
 
 
 @app.get("/sftp-debug")
 def sftp_debug():
     s, transport, sftp = _open_sftp()
     try:
-        cwd = sftp.getcwd()
-        dot_entries = _safe_listdir(sftp, ".")
-        root_entries = _safe_listdir(sftp, "/")
         return {
             "connected": True,
-            "cwd": cwd,
+            "cwd": sftp.getcwd(),
             "configured_epdd_path": s["epdd_path"],
             "configured_dip_path": s["dip_path"],
-            "dot_entries": dot_entries[:100],
-            "root_entries": root_entries[:100],
+            "dot_entries": _safe_listdir(sftp, ".")[:100],
+            "root_entries": _safe_listdir(sftp, "/")[:100],
+            "sanmarpdd_entries": _safe_listdir(sftp, "SanMarPDD")[:100],
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"SFTP diagnostic failed: {type(exc).__name__}: {exc}") from exc
@@ -234,9 +282,31 @@ def sftp_debug():
             transport.close()
 
 
-@app.post("/refresh", response_model=RefreshResult)
-def refresh():
-    return refresh_files()
+@app.post("/refresh", status_code=status.HTTP_202_ACCEPTED)
+def refresh(response: Response):
+    if _refresh_state["state"] == "running":
+        response.status_code = status.HTTP_202_ACCEPTED
+        return {"accepted": True, "message": "Refresh is already running.", **_refresh_state}
+
+    thread = threading.Thread(target=_refresh_worker, daemon=True)
+    thread.start()
+    return {
+        "accepted": True,
+        "message": "SanMar refresh started in the background. Check /refresh-status for progress.",
+        "status_url": "/refresh-status",
+    }
+
+
+@app.get("/refresh-status")
+def refresh_status():
+    return {
+        **_refresh_state,
+        "cache_dir": str(CACHE_DIR),
+        "epdd_exists": EPDD_LOCAL.exists(),
+        "dip_exists": DIP_LOCAL.exists(),
+        "epdd_size_bytes": EPDD_LOCAL.stat().st_size if EPDD_LOCAL.exists() else 0,
+        "dip_size_bytes": DIP_LOCAL.stat().st_size if DIP_LOCAL.exists() else 0,
+    }
 
 
 @app.get("/products/{style}")
@@ -254,13 +324,18 @@ def get_inventory(style: str, color: Optional[str] = Query(default=None), size: 
         rows = [r for r in rows if r["warehouse"] == str(warehouse)]
     if not rows:
         raise HTTPException(status_code=404, detail="No matching SanMar inventory rows found.")
+
     grouped = defaultdict(lambda: {"total_quantity": 0, "warehouses": []})
     for row in rows:
         key = f'{row["style"]}|{row["color"]}|{row["size"]}|{row["unique_key"]}'
         grouped[key].update({
-            "style": row["style"], "color": row["color"], "size": row["size"],
-            "unique_key": row["unique_key"], "piece_price": row["piece_price"],
-            "case_price": row["case_price"], "discontinued_code": row["discontinued_code"],
+            "style": row["style"],
+            "color": row["color"],
+            "size": row["size"],
+            "unique_key": row["unique_key"],
+            "piece_price": row["piece_price"],
+            "case_price": row["case_price"],
+            "discontinued_code": row["discontinued_code"],
         })
         grouped[key]["total_quantity"] += row["quantity"]
         grouped[key]["warehouses"].append({"warehouse": row["warehouse"], "quantity": row["quantity"]})
@@ -273,14 +348,17 @@ def product_summary(style: str):
     if not product_rows:
         raise HTTPException(status_code=404, detail="No matching SanMar product rows found.")
     inventory_rows = search_dip(style)
+
     inventory_by_key = defaultdict(int)
     for row in inventory_rows:
         inventory_by_key[row["unique_key"]] += row["quantity"]
+
     variants = []
     for row in product_rows:
         row = dict(row)
         row["total_inventory"] = inventory_by_key.get(row["unique_key"], 0)
         variants.append(row)
+
     first = variants[0]
     return {
         "style": style,
