@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: SanMar Connector
-  version: 1.0.0
+  version: 1.1.0
   description: Search cached SanMar product, pricing, image, and inventory data.
 servers:
   - url: https://sanmar-connector.onrender.com
@@ -23,6 +23,26 @@ paths:
             application/json:
               schema:
                 type: object
+                properties:
+                  style:
+                    type: string
+                  title:
+                    type: string
+                  brand:
+                    type: string
+                  category:
+                    type: string
+                  subcategory:
+                    type: string
+                  description:
+                    type: string
+                  variant_count:
+                    type: integer
+                  variants:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProductVariant'
+                required: [style, variants]
   /products/{style}:
     get:
       operationId: getSanMarProducts
@@ -50,6 +70,16 @@ paths:
             application/json:
               schema:
                 type: object
+                properties:
+                  style:
+                    type: string
+                  count:
+                    type: integer
+                  variants:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProductVariant'
+                required: [style, count, variants]
   /inventory/{style}:
     get:
       operationId: getSanMarInventory
@@ -82,6 +112,14 @@ paths:
             application/json:
               schema:
                 type: object
+                properties:
+                  style:
+                    type: string
+                  variants:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/InventoryVariant'
+                required: [style, variants]
   /refresh-status:
     get:
       operationId: getSanMarRefreshStatus
@@ -93,6 +131,37 @@ paths:
             application/json:
               schema:
                 type: object
+                properties:
+                  state:
+                    type: string
+                  started_at:
+                    type: [string, 'null']
+                  finished_at:
+                    type: [string, 'null']
+                  error:
+                    type: [string, 'null']
+                  current_file:
+                    type: [string, 'null']
+                  attempt:
+                    type: integer
+                  epdd_cached:
+                    type: boolean
+                  dip_cached:
+                    type: boolean
+                  cache_dir:
+                    type: string
+                  epdd_exists:
+                    type: boolean
+                  dip_exists:
+                    type: boolean
+                  epdd_size_bytes:
+                    type: integer
+                  dip_size_bytes:
+                    type: integer
+                  epdd_partial_bytes:
+                    type: integer
+                  dip_partial_bytes:
+                    type: integer
   /health:
     get:
       operationId: getSanMarHealth
@@ -104,3 +173,104 @@ paths:
             application/json:
               schema:
                 type: object
+                properties:
+                  status:
+                    type: string
+                  cache_dir:
+                    type: string
+                  epdd_cached:
+                    type: boolean
+                  dip_cached:
+                    type: boolean
+                required: [status, epdd_cached, dip_cached]
+components:
+  schemas:
+    ProductVariant:
+      type: object
+      properties:
+        unique_key:
+          type: [string, 'null']
+        style:
+          type: [string, 'null']
+        title:
+          type: [string, 'null']
+        description:
+          type: [string, 'null']
+        brand:
+          type: [string, 'null']
+        category:
+          type: [string, 'null']
+        subcategory:
+          type: [string, 'null']
+        color:
+          type: [string, 'null']
+        size:
+          type: [string, 'null']
+        qty_epdd:
+          type: [string, 'null']
+        piece_price:
+          type: [string, 'null']
+        case_price:
+          type: [string, 'null']
+        suggested_price:
+          type: [string, 'null']
+        msrp:
+          type: [string, 'null']
+        map_pricing:
+          type: [string, 'null']
+        product_status:
+          type: [string, 'null']
+        inventory_key:
+          type: [string, 'null']
+        size_index:
+          type: [string, 'null']
+        gtin:
+          type: [string, 'null']
+        front_model_image_url:
+          type: [string, 'null']
+        color_product_image:
+          type: [string, 'null']
+        front_flat_image:
+          type: [string, 'null']
+        back_flat_image:
+          type: [string, 'null']
+        color_swatch_image:
+          type: [string, 'null']
+        spec_sheet:
+          type: [string, 'null']
+        decoration_spec_sheet:
+          type: [string, 'null']
+        product_measurements:
+          type: [string, 'null']
+        pms_color:
+          type: [string, 'null']
+        total_inventory:
+          type: integer
+    InventoryVariant:
+      type: object
+      properties:
+        style:
+          type: [string, 'null']
+        color:
+          type: [string, 'null']
+        size:
+          type: [string, 'null']
+        unique_key:
+          type: [string, 'null']
+        piece_price:
+          type: [string, 'null']
+        case_price:
+          type: [string, 'null']
+        discontinued_code:
+          type: [string, 'null']
+        total_quantity:
+          type: integer
+        warehouses:
+          type: array
+          items:
+            type: object
+            properties:
+              warehouse:
+                type: [string, 'null']
+              quantity:
+                type: integer
