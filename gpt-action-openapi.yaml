@@ -1,15 +1,15 @@
 openapi: 3.1.0
 info:
   title: SanMar Connector
-  version: 1.1.0
-  description: Search cached SanMar product, pricing, image, and inventory data.
+  version: 1.2.0
+  description: Search cached SanMar product, pricing, image, and inventory data using compact responses suitable for GPT Actions.
 servers:
   - url: https://sanmar-connector.onrender.com
 paths:
-  /product-summary/{style}:
+  /product-overview/{style}:
     get:
-      operationId: getSanMarProductSummary
-      summary: Get a SanMar product with variants and total inventory
+      operationId: getSanMarProductOverview
+      summary: Get a compact SanMar product overview with colors, sizes, price ranges, images, and inventory totals
       parameters:
         - name: style
           in: path
@@ -18,7 +18,7 @@ paths:
             type: string
       responses:
         '200':
-          description: Product summary returned successfully
+          description: Compact product overview
           content:
             application/json:
               schema:
@@ -27,26 +27,78 @@ paths:
                   style:
                     type: string
                   title:
-                    type: string
+                    type: [string, 'null']
                   brand:
-                    type: string
+                    type: [string, 'null']
                   category:
-                    type: string
+                    type: [string, 'null']
                   subcategory:
-                    type: string
+                    type: [string, 'null']
                   description:
-                    type: string
+                    type: [string, 'null']
+                  product_status:
+                    type: [string, 'null']
                   variant_count:
                     type: integer
-                  variants:
+                  color_count:
+                    type: integer
+                  colors:
                     type: array
                     items:
-                      $ref: '#/components/schemas/ProductVariant'
-                required: [style, variants]
+                      type: string
+                  sizes:
+                    type: array
+                    items:
+                      type: string
+                  pricing:
+                    type: object
+                    properties:
+                      piece_min:
+                        type: [number, 'null']
+                      piece_max:
+                        type: [number, 'null']
+                      case_min:
+                        type: [number, 'null']
+                      case_max:
+                        type: [number, 'null']
+                      msrp_min:
+                        type: [number, 'null']
+                      msrp_max:
+                        type: [number, 'null']
+                      map_min:
+                        type: [number, 'null']
+                      map_max:
+                        type: [number, 'null']
+                  total_inventory:
+                    type: integer
+                  inventory_by_color:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                  images_by_color:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        front_model_image_url:
+                          type: [string, 'null']
+                        front_flat_image:
+                          type: [string, 'null']
+                        back_flat_image:
+                          type: [string, 'null']
+                        color_swatch_image:
+                          type: [string, 'null']
+                  spec_sheet:
+                    type: [string, 'null']
+                  decoration_spec_sheet:
+                    type: [string, 'null']
+                  product_measurements:
+                    type: [string, 'null']
+                required: [style, colors, sizes, pricing, total_inventory]
   /products/{style}:
     get:
-      operationId: getSanMarProducts
-      summary: Get SanMar product variants, optionally filtered by color and size
+      operationId: getSanMarProductsByFilter
+      summary: Get detailed SanMar variants for a style. Use color and/or size filters to keep the response small.
       parameters:
         - name: style
           in: path
@@ -82,8 +134,8 @@ paths:
                 required: [style, count, variants]
   /inventory/{style}:
     get:
-      operationId: getSanMarInventory
-      summary: Get SanMar inventory by style with optional color, size, and warehouse filters
+      operationId: getSanMarInventoryByFilter
+      summary: Get SanMar inventory for a style. Prefer color and/or size filters for detailed inventory.
       parameters:
         - name: style
           in: path
