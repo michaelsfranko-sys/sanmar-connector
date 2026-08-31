@@ -12,7 +12,7 @@ from fastapi import FastAPI, HTTPException, Query, Response, status
 
 app = FastAPI(
     title="SanMar Connector",
-    version="0.4.0",
+    version="0.5.0",
     description="Private API for searching SanMar EPDD product data and sanmar_dip inventory data.",
 )
 
@@ -245,6 +245,15 @@ def _clean_description(value: Optional[str]) -> str:
     return " ".join(value.replace("|", " ").split())
 
 
+def _as_float(value):
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def search_epdd(style: str, color: Optional[str] = None, size: Optional[str] = None):
     ensure_cache()
     rows = []
@@ -324,6 +333,76 @@ def search_dip(style: str, color: Optional[str] = None, size: Optional[str] = No
     return rows
 
 
+def build_product_overview(style: str):
+    product_rows = search_epdd(style)
+    if not product_rows:
+        raise HTTPException(status_code=404, detail="No matching SanMar product rows found.")
+    inventory_rows = search_dip(style)
+
+    colors = sorted({r.get("color") for r in product_rows if r.get("color")})
+    sizes = []
+    seen_sizes = set()
+    for row in product_rows:
+        size = row.get("size")
+        if size and size not in seen_sizes:
+            seen_sizes.add(size)
+            sizes.append(size)
+
+    piece_prices = [p for p in (_as_float(r.get("piece_price")) for r in product_rows) if p is not None]
+    case_prices = [p for p in (_as_float(r.get("case_price")) for r in product_rows) if p is not None]
+    msrps = [p for p in (_as_float(r.get("msrp")) for r in product_rows) if p is not None]
+    maps = [p for p in (_as_float(r.get("map_pricing")) for r in product_rows) if p is not None and p > 0]
+
+    total_inventory = sum(r.get("quantity", 0) for r in inventory_rows)
+    inventory_by_color = defaultdict(int)
+    for row in inventory_rows:
+        if row.get("color"):
+            inventory_by_color[row["color"]] += row.get("quantity", 0)
+
+    image_by_color = {}
+    for row in product_rows:
+        color = row.get("color")
+        if not color or color in image_by_color:
+            continue
+        image_by_color[color] = {
+            "front_model_image_url": row.get("front_model_image_url"),
+            "front_flat_image": row.get("front_flat_image"),
+            "back_flat_image": row.get("back_flat_image"),
+            "color_swatch_image": row.get("color_swatch_image"),
+        }
+
+    first = product_rows[0]
+    return {
+        "style": style,
+        "title": first.get("title"),
+        "brand": first.get("brand"),
+        "category": first.get("category"),
+        "subcategory": first.get("subcategory"),
+        "description": first.get("description"),
+        "product_status": first.get("product_status"),
+        "variant_count": len(product_rows),
+        "color_count": len(colors),
+        "colors": colors,
+        "sizes": sizes,
+        "pricing": {
+            "piece_min": min(piece_prices) if piece_prices else None,
+            "piece_max": max(piece_prices) if piece_prices else None,
+            "case_min": min(case_prices) if case_prices else None,
+            "case_max": max(case_prices) if case_prices else None,
+            "msrp_min": min(msrps) if msrps else None,
+            "msrp_max": max(msrps) if msrps else None,
+            "map_min": min(maps) if maps else None,
+            "map_max": max(maps) if maps else None,
+        },
+        "total_inventory": total_inventory,
+        "inventory_by_color": dict(sorted(inventory_by_color.items())),
+        "images_by_color": image_by_color,
+        "spec_sheet": first.get("spec_sheet"),
+        "decoration_spec_sheet": first.get("decoration_spec_sheet"),
+        "product_measurements": first.get("product_measurements"),
+    }
+
+
 @app.get("/health")
 def health():
     return {
@@ -383,6 +462,11 @@ def refresh_status():
         "epdd_partial_bytes": epdd_part.stat().st_size if epdd_part.exists() else 0,
         "dip_partial_bytes": dip_part.stat().st_size if dip_part.exists() else 0,
     }
+
+
+@app.get("/product-overview/{style}")
+def product_overview(style: str):
+    return build_product_overview(style)
 
 
 @app.get("/products/{style}")
