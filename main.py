@@ -1,7 +1,7 @@
 import csv
 import os
-import shutil
 import threading
+import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,13 +12,16 @@ from fastapi import FastAPI, HTTPException, Query, Response, status
 
 app = FastAPI(
     title="SanMar Connector",
-    version="0.3.0",
+    version="0.4.0",
     description="Private API for searching SanMar EPDD product data and sanmar_dip inventory data.",
 )
 
 CACHE_DIR = Path(os.getenv("SANMAR_CACHE_DIR", "/tmp/sanmar"))
 EPDD_LOCAL = CACHE_DIR / "SanMar_EPDD.csv"
 DIP_LOCAL = CACHE_DIR / "sanmar_dip.txt"
+CHUNK_SIZE = int(os.getenv("SANMAR_DOWNLOAD_CHUNK_SIZE", str(1024 * 1024)))
+MAX_DOWNLOAD_ATTEMPTS = int(os.getenv("SANMAR_DOWNLOAD_ATTEMPTS", "8"))
+RETRY_DELAY_SECONDS = int(os.getenv("SANMAR_RETRY_DELAY_SECONDS", "5"))
 
 _refresh_lock = threading.Lock()
 _refresh_state = {
@@ -26,6 +29,8 @@ _refresh_state = {
     "started_at": None,
     "finished_at": None,
     "error": None,
+    "current_file": None,
+    "attempt": 0,
     "epdd_cached": EPDD_LOCAL.exists(),
     "dip_cached": DIP_LOCAL.exists(),
 }
@@ -57,6 +62,7 @@ def _open_sftp():
     s = _require_credentials()
     transport = paramiko.Transport((s["host"], s["port"]))
     transport.connect(username=s["username"], password=s["password"])
+    transport.set_keepalive(30)
     sftp = paramiko.SFTPClient.from_transport(transport)
     return s, transport, sftp
 
@@ -102,27 +108,90 @@ def _resolve_remote_path(sftp, configured_path: str) -> str:
     )
 
 
-def _download_sftp_file(sftp, remote_path: str, local_path: Path):
-    resolved_path = _resolve_remote_path(sftp, remote_path)
+def _part_path(local_path: Path) -> Path:
+    return local_path.with_suffix(local_path.suffix + ".part")
+
+
+def _download_file_resumable(configured_remote_path: str, local_path: Path, label: str):
     local_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = local_path.with_suffix(local_path.suffix + ".part")
-    if temp_path.exists():
-        temp_path.unlink()
-    sftp.get(resolved_path, str(temp_path))
-    shutil.move(str(temp_path), str(local_path))
-    return resolved_path
+    temp_path = _part_path(local_path)
+    last_error = None
+
+    for attempt in range(1, MAX_DOWNLOAD_ATTEMPTS + 1):
+        _refresh_state["current_file"] = label
+        _refresh_state["attempt"] = attempt
+        transport = None
+        sftp = None
+        remote_file = None
+        try:
+            _, transport, sftp = _open_sftp()
+            resolved_path = _resolve_remote_path(sftp, configured_remote_path)
+            remote_size = sftp.stat(resolved_path).st_size
+
+            offset = temp_path.stat().st_size if temp_path.exists() else 0
+            if offset > remote_size:
+                temp_path.unlink(missing_ok=True)
+                offset = 0
+
+            if offset == remote_size and remote_size > 0:
+                os.replace(temp_path, local_path)
+                return resolved_path
+
+            remote_file = sftp.open(resolved_path, "rb")
+            remote_file.set_pipelined(False)
+            remote_file.seek(offset)
+
+            with temp_path.open("ab") as local_file:
+                while offset < remote_size:
+                    data = remote_file.read(min(CHUNK_SIZE, remote_size - offset))
+                    if not data:
+                        raise IOError(
+                            f"Unexpected EOF while downloading {label}: {offset}/{remote_size} bytes"
+                        )
+                    local_file.write(data)
+                    local_file.flush()
+                    offset += len(data)
+
+            if temp_path.stat().st_size != remote_size:
+                raise IOError(
+                    f"Incomplete {label} download: {temp_path.stat().st_size}/{remote_size} bytes"
+                )
+
+            os.replace(temp_path, local_path)
+            return resolved_path
+
+        except Exception as exc:
+            last_error = exc
+            if attempt >= MAX_DOWNLOAD_ATTEMPTS:
+                break
+            time.sleep(RETRY_DELAY_SECONDS)
+        finally:
+            try:
+                if remote_file is not None:
+                    remote_file.close()
+            except Exception:
+                pass
+            try:
+                if sftp is not None:
+                    sftp.close()
+            except Exception:
+                pass
+            try:
+                if transport is not None:
+                    transport.close()
+            except Exception:
+                pass
+
+    raise RuntimeError(
+        f"{label} download failed after {MAX_DOWNLOAD_ATTEMPTS} attempts. "
+        f"Partial file retained for resume. Last error: {type(last_error).__name__}: {last_error}"
+    )
 
 
 def refresh_files():
-    s, transport, sftp = _open_sftp()
-    try:
-        _download_sftp_file(sftp, s["epdd_path"], EPDD_LOCAL)
-        _download_sftp_file(sftp, s["dip_path"], DIP_LOCAL)
-    finally:
-        try:
-            sftp.close()
-        finally:
-            transport.close()
+    s = _require_credentials()
+    _download_file_resumable(s["epdd_path"], EPDD_LOCAL, "EPDD")
+    _download_file_resumable(s["dip_path"], DIP_LOCAL, "DIP")
 
 
 def _refresh_worker():
@@ -132,6 +201,8 @@ def _refresh_worker():
             "started_at": _utc_now(),
             "finished_at": None,
             "error": None,
+            "current_file": None,
+            "attempt": 0,
             "epdd_cached": EPDD_LOCAL.exists(),
             "dip_cached": DIP_LOCAL.exists(),
         })
@@ -140,6 +211,9 @@ def _refresh_worker():
             _refresh_state.update({
                 "state": "completed",
                 "finished_at": _utc_now(),
+                "error": None,
+                "current_file": None,
+                "attempt": 0,
                 "epdd_cached": EPDD_LOCAL.exists(),
                 "dip_cached": DIP_LOCAL.exists(),
             })
@@ -273,8 +347,6 @@ def sftp_debug():
             "root_entries": _safe_listdir(sftp, "/")[:100],
             "sanmarpdd_entries": _safe_listdir(sftp, "SanMarPDD")[:100],
         }
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"SFTP diagnostic failed: {type(exc).__name__}: {exc}") from exc
     finally:
         try:
             sftp.close()
@@ -299,6 +371,8 @@ def refresh(response: Response):
 
 @app.get("/refresh-status")
 def refresh_status():
+    epdd_part = _part_path(EPDD_LOCAL)
+    dip_part = _part_path(DIP_LOCAL)
     return {
         **_refresh_state,
         "cache_dir": str(CACHE_DIR),
@@ -306,6 +380,8 @@ def refresh_status():
         "dip_exists": DIP_LOCAL.exists(),
         "epdd_size_bytes": EPDD_LOCAL.stat().st_size if EPDD_LOCAL.exists() else 0,
         "dip_size_bytes": DIP_LOCAL.stat().st_size if DIP_LOCAL.exists() else 0,
+        "epdd_partial_bytes": epdd_part.stat().st_size if epdd_part.exists() else 0,
+        "dip_partial_bytes": dip_part.stat().st_size if dip_part.exists() else 0,
     }
 
 
