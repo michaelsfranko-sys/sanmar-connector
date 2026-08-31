@@ -1,0 +1,106 @@
+openapi: 3.1.0
+info:
+  title: SanMar Connector
+  version: 1.0.0
+  description: Search cached SanMar product, pricing, image, and inventory data.
+servers:
+  - url: https://sanmar-connector.onrender.com
+paths:
+  /product-summary/{style}:
+    get:
+      operationId: getSanMarProductSummary
+      summary: Get a SanMar product with variants and total inventory
+      parameters:
+        - name: style
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Product summary returned successfully
+          content:
+            application/json:
+              schema:
+                type: object
+  /products/{style}:
+    get:
+      operationId: getSanMarProducts
+      summary: Get SanMar product variants, optionally filtered by color and size
+      parameters:
+        - name: style
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: color
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: size
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Matching product variants
+          content:
+            application/json:
+              schema:
+                type: object
+  /inventory/{style}:
+    get:
+      operationId: getSanMarInventory
+      summary: Get SanMar inventory by style with optional color, size, and warehouse filters
+      parameters:
+        - name: style
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: color
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: size
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: warehouse
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Inventory returned successfully
+          content:
+            application/json:
+              schema:
+                type: object
+  /refresh-status:
+    get:
+      operationId: getSanMarRefreshStatus
+      summary: Check status of the SanMar background data refresh
+      responses:
+        '200':
+          description: Refresh status
+          content:
+            application/json:
+              schema:
+                type: object
+  /health:
+    get:
+      operationId: getSanMarHealth
+      summary: Check whether SanMar connector data is cached and available
+      responses:
+        '200':
+          description: Health status
+          content:
+            application/json:
+              schema:
+                type: object
