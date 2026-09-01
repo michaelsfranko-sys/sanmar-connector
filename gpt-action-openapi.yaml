@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: SanMar + Shopify Connector
-  version: 1.5.0
+  version: 1.5.1
   description: Search SanMar, create and update Shopify drafts, generate mockups, and attach approved images.
 servers:
   - url: https://sanmar-connector.onrender.com
@@ -271,3 +271,4 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
+  schemas: {}
