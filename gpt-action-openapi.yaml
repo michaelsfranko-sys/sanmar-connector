@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: SanMar + Shopify Connector
-  version: 1.3.0
-  description: Search cached SanMar product and inventory data and create approved Shopify draft products.
+  version: 1.4.0
+  description: Search cached SanMar product and inventory data, create approved Shopify draft products, and safely update existing SanMar draft variants.
 servers:
   - url: https://sanmar-connector.onrender.com
 paths:
@@ -208,14 +208,60 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ShopifyImportResult'
-        '400':
-          description: Invalid or unconfirmed import request
-        '401':
-          description: Missing connector authorization
-        '403':
-          description: Invalid connector authorization
-        '409':
-          description: A Shopify product for this SanMar style already exists
+        '400': { description: Invalid or unconfirmed import request }
+        '401': { description: Missing connector authorization }
+        '403': { description: Invalid connector authorization }
+        '409': { description: A Shopify product for this SanMar style already exists }
+  /shopify/update-sanmar-draft:
+    post:
+      operationId: updateExistingSanMarDraft
+      summary: Add variants to or replace the variant set on an existing SanMar Shopify DRAFT product
+      description: Use only after the user explicitly approves the SanMar style, colors, sizes, and update mode. Mode add only adds missing combinations and preserves all existing variants. Mode replace makes the draft variant set match the approved selections and can remove variants not selected. Never use replace without explicit approval.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                style:
+                  type: string
+                  description: Existing SanMar style number such as K500
+                colors:
+                  type: array
+                  minItems: 1
+                  items: { type: string }
+                sizes:
+                  type: array
+                  minItems: 1
+                  items: { type: string }
+                mode:
+                  type: string
+                  enum: [add, replace]
+                  default: add
+                  description: add preserves existing variants and adds only missing combinations. replace makes the complete variant set match these selections.
+                retail_price:
+                  type: [number, 'null']
+                  minimum: 0
+                  description: Optional retail price. In add mode it applies only to newly added variants. In replace mode it applies to all selected variants; omit to preserve prices on existing matching variants and use $0.00 on new variants.
+                confirm:
+                  type: boolean
+                  description: Must be true only after explicit user approval of the requested update and mode
+              required: [style, colors, sizes, mode, confirm]
+      responses:
+        '200':
+          description: Existing Shopify draft updated or no change required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShopifyUpdateResult'
+        '400': { description: Invalid or unconfirmed update request }
+        '401': { description: Missing connector authorization }
+        '403': { description: Invalid connector authorization }
+        '404': { description: SanMar style or matching Shopify product not found }
+        '409': { description: Matching Shopify product is not a DRAFT }
 components:
   securitySchemes:
     bearerAuth:
@@ -339,3 +385,25 @@ components:
         retail_price: { type: [number, 'null'] }
         note: { type: string }
       required: [status, shopify_status, product_id, admin_url, sanmar_style, variant_count]
+    ShopifyUpdateResult:
+      type: object
+      properties:
+        status: { type: string }
+        mode: { type: string }
+        product_id: { type: string }
+        admin_url: { type: string }
+        sanmar_style: { type: string }
+        existing_variant_count: { type: integer }
+        previous_variant_count: { type: integer }
+        resulting_variant_count: { type: integer }
+        added_variant_count: { type: integer }
+        removed_variant_count: { type: integer }
+        selected_colors:
+          type: array
+          items: { type: string }
+        selected_sizes:
+          type: array
+          items: { type: string }
+        retail_price: { type: [number, 'null'] }
+        note: { type: string }
+      required: [status, mode, product_id, admin_url, sanmar_style]
