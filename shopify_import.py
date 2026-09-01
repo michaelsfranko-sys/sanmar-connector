@@ -1,9 +1,10 @@
 import html
 import os
 import re
+import secrets
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from main import search_epdd
@@ -21,6 +22,20 @@ class SanMarDraftImportRequest(BaseModel):
     tags: list[str] = Field(default_factory=list, max_length=50)
     confirm: bool = False
     allow_duplicate: bool = False
+
+
+def _require_connector_key(authorization: Optional[str]) -> None:
+    expected = (os.getenv("CONNECTOR_API_KEY") or "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="Shopify import is disabled until CONNECTOR_API_KEY is configured in Render.",
+        )
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing Bearer authorization token.")
+    supplied = authorization[len("Bearer "):].strip()
+    if not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=403, detail="Invalid connector API key.")
 
 
 def _norm(value: Optional[str]) -> str:
@@ -62,7 +77,12 @@ def _find_existing_by_style(style: str):
 
 
 @router.post("/import-sanmar-draft")
-def import_sanmar_draft(request: SanMarDraftImportRequest):
+def import_sanmar_draft(
+    request: SanMarDraftImportRequest,
+    authorization: Optional[str] = Header(default=None),
+):
+    _require_connector_key(authorization)
+
     if not request.confirm:
         raise HTTPException(
             status_code=400,
@@ -117,7 +137,6 @@ def import_sanmar_draft(request: SanMarDraftImportRequest):
             detail=f"This request would create {len(selected)} variants. The connector limit is {max_variants}; narrow the selected colors/sizes.",
         )
 
-    # Preserve SanMar's canonical option spelling/order from the matched rows.
     colors = []
     sizes = []
     for row in selected:
@@ -145,22 +164,11 @@ def import_sanmar_draft(request: SanMarDraftImportRequest):
             {"name": "Size", "values": [{"name": value} for value in sizes]},
         ],
         "metafields": [
-            {
-                "namespace": "supplier",
-                "key": "name",
-                "type": "single_line_text_field",
-                "value": "SanMar",
-            },
-            {
-                "namespace": "supplier",
-                "key": "style",
-                "type": "single_line_text_field",
-                "value": style,
-            },
+            {"namespace": "supplier", "key": "name", "type": "single_line_text_field", "value": "SanMar"},
+            {"namespace": "supplier", "key": "style", "type": "single_line_text_field", "value": style},
         ],
     }
 
-    # Add representative SanMar model images for selected colors when URLs are available.
     media = []
     seen_urls = set()
     for row in selected:
@@ -181,13 +189,7 @@ def import_sanmar_draft(request: SanMarDraftImportRequest):
     create_mutation = """
     mutation CreateSanMarDraft($product: ProductCreateInput!, $media: [CreateMediaInput!]) {
       productCreate(product: $product, media: $media) {
-        product {
-          id
-          title
-          handle
-          status
-          options { id name values }
-        }
+        product { id title handle status options { id name values } }
         userErrors { field message }
       }
     }
@@ -197,10 +199,7 @@ def import_sanmar_draft(request: SanMarDraftImportRequest):
     create_errors = create_payload.get("userErrors") or []
     product = create_payload.get("product")
     if create_errors or not product:
-        raise HTTPException(
-            status_code=502,
-            detail={"message": "Shopify productCreate failed.", "user_errors": create_errors},
-        )
+        raise HTTPException(status_code=502, detail={"message": "Shopify productCreate failed.", "user_errors": create_errors})
 
     variant_inputs = []
     for row in selected:
@@ -215,24 +214,9 @@ def import_sanmar_draft(request: SanMarDraftImportRequest):
                 "tracked": False,
             },
             "metafields": [
-                {
-                    "namespace": "supplier",
-                    "key": "piece_cost",
-                    "type": "single_line_text_field",
-                    "value": str(row.get("piece_price") or ""),
-                },
-                {
-                    "namespace": "supplier",
-                    "key": "msrp",
-                    "type": "single_line_text_field",
-                    "value": str(row.get("msrp") or ""),
-                },
-                {
-                    "namespace": "supplier",
-                    "key": "map",
-                    "type": "single_line_text_field",
-                    "value": str(row.get("map_pricing") or ""),
-                },
+                {"namespace": "supplier", "key": "piece_cost", "type": "single_line_text_field", "value": str(row.get("piece_price") or "")},
+                {"namespace": "supplier", "key": "msrp", "type": "single_line_text_field", "value": str(row.get("msrp") or "")},
+                {"namespace": "supplier", "key": "map", "type": "single_line_text_field", "value": str(row.get("map_pricing") or "")},
             ],
         }
         gtin = row.get("gtin")
@@ -245,27 +229,16 @@ def import_sanmar_draft(request: SanMarDraftImportRequest):
 
     variants_mutation = """
     mutation CreateSanMarVariants($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-      productVariantsBulkCreate(
-        productId: $productId,
-        variants: $variants,
-        strategy: REMOVE_STANDALONE_VARIANT
-      ) {
+      productVariantsBulkCreate(productId: $productId, variants: $variants, strategy: REMOVE_STANDALONE_VARIANT) {
         product { id title status }
         productVariants {
-          id
-          title
-          price
-          selectedOptions { name value }
-          inventoryItem { id sku tracked }
+          id title price selectedOptions { name value } inventoryItem { id sku tracked }
         }
         userErrors { field message }
       }
     }
     """
-    variants_data = _graphql(
-        variants_mutation,
-        {"productId": product["id"], "variants": variant_inputs},
-    )
+    variants_data = _graphql(variants_mutation, {"productId": product["id"], "variants": variant_inputs})
     variants_payload = variants_data.get("productVariantsBulkCreate") or {}
     variant_errors = variants_payload.get("userErrors") or []
     created_variants = variants_payload.get("productVariants") or []
