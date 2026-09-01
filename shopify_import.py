@@ -56,6 +56,24 @@ def _safe_tag(value: str) -> str:
     return cleaned[:255]
 
 
+def _clean_product_title(value: Optional[str], style: str) -> str:
+    """Convert SanMar's encoded merchandising title into a clean Shopify title."""
+    raw = (value or "").strip()
+    if not raw:
+        return f"SanMar {style}"
+
+    # SanMar titles can contain both normal HTML entities (&#174;) and malformed
+    # numeric entities (&174; / &153;). Normalize the malformed numeric forms first.
+    raw = re.sub(r"&(\d{2,4});", r"&#\1;", raw)
+    cleaned = html.unescape(raw)
+
+    # Keep the storefront title clean and readable; trademark symbols remain available
+    # in supplier data but are not useful in the Shopify merchandising title.
+    cleaned = cleaned.replace("®", "").replace("™", "")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or f"SanMar {style}"
+
+
 def _product_admin_url(product_id: str) -> str:
     numeric_id = product_id.rsplit("/", 1)[-1]
     store = _shopify_settings()["store"]
@@ -146,7 +164,7 @@ def import_sanmar_draft(
             sizes.append(row["size"])
 
     first = selected[0]
-    product_title = request.title or first.get("title") or f"SanMar {style}"
+    product_title = _clean_product_title(request.title or first.get("title"), style)
     description = first.get("description") or ""
     description_html = f"<p>{html.escape(description)}</p>" if description else ""
     style_tag = f"sanmar_style_{_safe_tag(style)}"
