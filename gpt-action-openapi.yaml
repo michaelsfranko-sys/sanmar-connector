@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: SanMar + Shopify Connector
-  version: 1.4.0
+  version: 1.4.1
   description: Search cached SanMar product and inventory data, create approved Shopify draft products, and safely update existing SanMar draft variants.
 servers:
   - url: https://sanmar-connector.onrender.com
@@ -164,7 +164,7 @@ paths:
     post:
       operationId: importSanMarDraftToShopify
       summary: Create a Shopify DRAFT product from user-approved SanMar colors and sizes
-      description: Use only after the user has explicitly approved the SanMar style, colors, and sizes. Never set confirm=true without that approval. Products are always created as DRAFT.
+      description: Create a Shopify draft only after the user approves the SanMar style, colors, and sizes. Never set confirm=true without that approval.
       security:
         - bearerAuth: []
       requestBody:
@@ -215,8 +215,8 @@ paths:
   /shopify/update-sanmar-draft:
     post:
       operationId: updateExistingSanMarDraft
-      summary: Add variants to or replace the variant set on an existing SanMar Shopify DRAFT product
-      description: Use only after the user explicitly approves the SanMar style, colors, sizes, and update mode. Mode add only adds missing combinations and preserves all existing variants. Mode replace makes the draft variant set match the approved selections and can remove variants not selected. Never use replace without explicit approval.
+      summary: Add variants to or replace variants on an existing SanMar Shopify DRAFT product
+      description: Use after user approval. add preserves existing variants and adds missing combinations. replace makes the draft match the approved selections and may remove unselected variants.
       security:
         - bearerAuth: []
       requestBody:
@@ -241,11 +241,11 @@ paths:
                   type: string
                   enum: [add, replace]
                   default: add
-                  description: add preserves existing variants and adds only missing combinations. replace makes the complete variant set match these selections.
+                  description: add preserves existing variants; replace makes the complete variant set match these selections.
                 retail_price:
                   type: [number, 'null']
                   minimum: 0
-                  description: Optional retail price. In add mode it applies only to newly added variants. In replace mode it applies to all selected variants; omit to preserve prices on existing matching variants and use $0.00 on new variants.
+                  description: Optional retail price. add applies it to new variants only. replace applies it to all selected variants.
                 confirm:
                   type: boolean
                   description: Must be true only after explicit user approval of the requested update and mode
