@@ -1,32 +1,40 @@
 openapi: 3.1.0
 info:
   title: SanMar + Shopify Connector
-  version: 1.4.1
-  description: Search cached SanMar product and inventory data, create approved Shopify draft products, and safely update existing SanMar draft variants.
+  version: 1.5.0
+  description: Search SanMar, create and update Shopify drafts, generate mockups, and attach approved images.
 servers:
   - url: https://sanmar-connector.onrender.com
 paths:
   /product-overview/{style}:
     get:
       operationId: getSanMarProductOverview
-      summary: Get a compact SanMar product overview with colors, sizes, pricing, images, and inventory totals
+      summary: Get SanMar product colors, sizes, pricing, images, and inventory totals
       parameters:
         - name: style
           in: path
           required: true
-          schema:
-            type: string
+          schema: { type: string }
       responses:
         '200':
-          description: Compact product overview
+          description: Product overview
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProductOverview'
+                type: object
+                properties:
+                  style: { type: string }
+                  title: { type: [string, 'null'] }
+                  colors: { type: array, items: { type: string } }
+                  sizes: { type: array, items: { type: string } }
+                  pricing: { type: object, additionalProperties: true }
+                  total_inventory: { type: integer }
+                  images_by_color: { type: object, additionalProperties: true }
+                required: [style, colors, sizes, pricing, total_inventory]
   /products/{style}:
     get:
       operationId: getSanMarProductsByFilter
-      summary: Get detailed SanMar variants. Prefer color and size filters to keep the response small.
+      summary: Get detailed SanMar variants using optional color and size filters
       parameters:
         - name: style
           in: path
@@ -42,7 +50,7 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          description: Matching product variants
+          description: Matching variants
           content:
             application/json:
               schema:
@@ -50,10 +58,7 @@ paths:
                 properties:
                   style: { type: string }
                   count: { type: integer }
-                  variants:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/ProductVariant'
+                  variants: { type: array, items: { type: object, additionalProperties: true } }
                 required: [style, count, variants]
   /inventory/{style}:
     get:
@@ -78,22 +83,19 @@ paths:
           schema: { type: string }
       responses:
         '200':
-          description: Inventory returned successfully
+          description: Inventory results
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   style: { type: string }
-                  variants:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/InventoryVariant'
+                  variants: { type: array, items: { type: object, additionalProperties: true } }
                 required: [style, variants]
   /health:
     get:
       operationId: getSanMarHealth
-      summary: Check whether SanMar connector data is cached and available
+      summary: Check SanMar connector cache health
       responses:
         '200':
           description: Health status
@@ -103,44 +105,16 @@ paths:
                 type: object
                 properties:
                   status: { type: string }
-                  cache_dir: { type: string }
                   epdd_cached: { type: boolean }
                   dip_cached: { type: boolean }
                 required: [status, epdd_cached, dip_cached]
-  /refresh-status:
-    get:
-      operationId: getSanMarRefreshStatus
-      summary: Check the SanMar background refresh status
-      responses:
-        '200':
-          description: Refresh status
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  state: { type: string }
-                  started_at: { type: [string, 'null'] }
-                  finished_at: { type: [string, 'null'] }
-                  error: { type: [string, 'null'] }
-                  current_file: { type: [string, 'null'] }
-                  attempt: { type: integer }
-                  epdd_cached: { type: boolean }
-                  dip_cached: { type: boolean }
-                  cache_dir: { type: string }
-                  epdd_exists: { type: boolean }
-                  dip_exists: { type: boolean }
-                  epdd_size_bytes: { type: integer }
-                  dip_size_bytes: { type: integer }
-                  epdd_partial_bytes: { type: integer }
-                  dip_partial_bytes: { type: integer }
   /shopify/health:
     get:
       operationId: getShopifyConnectorHealth
-      summary: Verify the Shopify store connection and required access scopes
+      summary: Verify Shopify connection and scopes
       responses:
         '200':
-          description: Shopify connector health
+          description: Shopify health
           content:
             application/json:
               schema:
@@ -149,24 +123,14 @@ paths:
                   status: { type: string }
                   shop_name: { type: string }
                   myshopify_domain: { type: string }
-                  api_version: { type: string }
-                  access_scopes:
-                    type: array
-                    items: { type: string }
-                  required_scopes_present:
-                    type: object
-                    properties:
-                      write_products: { type: boolean }
-                      write_inventory: { type: boolean }
-                      read_locations: { type: boolean }
+                  access_scopes: { type: array, items: { type: string } }
                 required: [status, shop_name, myshopify_domain]
   /shopify/import-sanmar-draft:
     post:
       operationId: importSanMarDraftToShopify
-      summary: Create a Shopify DRAFT product from user-approved SanMar colors and sizes
-      description: Create a Shopify draft only after the user approves the SanMar style, colors, and sizes. Never set confirm=true without that approval.
-      security:
-        - bearerAuth: []
+      summary: Create an approved SanMar product as a Shopify DRAFT
+      description: Use only after the user approves the style, colors, and sizes. Always create as DRAFT.
+      security: [{ bearerAuth: [] }]
       requestBody:
         required: true
         content:
@@ -174,51 +138,36 @@ paths:
             schema:
               type: object
               properties:
-                style:
-                  type: string
-                  description: SanMar style number such as K500
-                colors:
-                  type: array
-                  minItems: 1
-                  items: { type: string }
-                sizes:
-                  type: array
-                  minItems: 1
-                  items: { type: string }
-                retail_price:
-                  type: [number, 'null']
-                  minimum: 0
-                  description: Optional retail price for every imported variant. Omit to create $0.00 placeholders for manual pricing.
-                title:
-                  type: [string, 'null']
-                tags:
-                  type: array
-                  items: { type: string }
-                confirm:
-                  type: boolean
-                  description: Must be true only after explicit user approval
-                allow_duplicate:
-                  type: boolean
-                  default: false
+                style: { type: string }
+                colors: { type: array, minItems: 1, items: { type: string } }
+                sizes: { type: array, minItems: 1, items: { type: string } }
+                retail_price: { type: [number, 'null'], minimum: 0 }
+                title: { type: [string, 'null'] }
+                tags: { type: array, items: { type: string } }
+                confirm: { type: boolean }
+                allow_duplicate: { type: boolean, default: false }
               required: [style, colors, sizes, confirm]
       responses:
         '200':
-          description: Shopify draft product created
+          description: Draft created
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ShopifyImportResult'
-        '400': { description: Invalid or unconfirmed import request }
-        '401': { description: Missing connector authorization }
-        '403': { description: Invalid connector authorization }
-        '409': { description: A Shopify product for this SanMar style already exists }
+                type: object
+                properties:
+                  status: { type: string }
+                  product_id: { type: string }
+                  admin_url: { type: string }
+                  sanmar_style: { type: string }
+                  variant_count: { type: integer }
+                required: [status, product_id, admin_url, sanmar_style]
+        '409': { description: Product already exists }
   /shopify/update-sanmar-draft:
     post:
       operationId: updateExistingSanMarDraft
-      summary: Add variants to or replace variants on an existing SanMar Shopify DRAFT product
-      description: Use after user approval. add preserves existing variants and adds missing combinations. replace makes the draft match the approved selections and may remove unselected variants.
-      security:
-        - bearerAuth: []
+      summary: Add or replace variants on an existing SanMar Shopify DRAFT
+      description: Use add to preserve variants. Use replace only after explicit approval because omitted variants can be removed.
+      security: [{ bearerAuth: [] }]
       requestBody:
         required: true
         content:
@@ -226,184 +175,99 @@ paths:
             schema:
               type: object
               properties:
-                style:
-                  type: string
-                  description: Existing SanMar style number such as K500
-                colors:
-                  type: array
-                  minItems: 1
-                  items: { type: string }
-                sizes:
-                  type: array
-                  minItems: 1
-                  items: { type: string }
-                mode:
-                  type: string
-                  enum: [add, replace]
-                  default: add
-                  description: add preserves existing variants; replace makes the complete variant set match these selections.
-                retail_price:
-                  type: [number, 'null']
-                  minimum: 0
-                  description: Optional retail price. add applies it to new variants only. replace applies it to all selected variants.
-                confirm:
-                  type: boolean
-                  description: Must be true only after explicit user approval of the requested update and mode
+                style: { type: string }
+                colors: { type: array, minItems: 1, items: { type: string } }
+                sizes: { type: array, minItems: 1, items: { type: string } }
+                mode: { type: string, enum: [add, replace], default: add }
+                retail_price: { type: [number, 'null'], minimum: 0 }
+                confirm: { type: boolean }
               required: [style, colors, sizes, mode, confirm]
       responses:
         '200':
-          description: Existing Shopify draft updated or no change required
+          description: Draft updated
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ShopifyUpdateResult'
-        '400': { description: Invalid or unconfirmed update request }
-        '401': { description: Missing connector authorization }
-        '403': { description: Invalid connector authorization }
-        '404': { description: SanMar style or matching Shopify product not found }
-        '409': { description: Matching Shopify product is not a DRAFT }
+                type: object
+                properties:
+                  status: { type: string }
+                  mode: { type: string }
+                  product_id: { type: string }
+                  admin_url: { type: string }
+                  sanmar_style: { type: string }
+                required: [status, mode, product_id, admin_url, sanmar_style]
+  /shopify/create-mockup:
+    post:
+      operationId: createSanMarProductMockup
+      summary: Create a product mockup from a SanMar garment image and approved artwork URL
+      description: Generate a deterministic mockup without redrawing the artwork. Attach to Shopify only after user approval.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                style: { type: string, description: SanMar style such as K500 }
+                color: { type: string }
+                artwork_url: { type: string, format: uri, description: Public PNG artwork URL; transparent background preferred }
+                placement: { type: string, enum: [left_chest, center_chest, full_front], default: left_chest }
+                scale: { type: number, minimum: 0.5, maximum: 1.5, default: 1.0 }
+                attach_to_shopify: { type: boolean, default: false }
+                confirm_attach: { type: boolean, default: false }
+                alt_text: { type: [string, 'null'] }
+              required: [style, color, artwork_url, placement]
+      responses:
+        '200':
+          description: Mockup created and optionally attached
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  style: { type: string }
+                  color: { type: string }
+                  placement: { type: string }
+                  mockup_url: { type: string }
+                  attached_to_shopify: { type: boolean }
+                  product_id: { type: [string, 'null'] }
+                  admin_url: { type: [string, 'null'] }
+                required: [status, style, color, placement, mockup_url, attached_to_shopify]
+  /shopify/attach-image:
+    post:
+      operationId: attachImageUrlToSanMarProduct
+      summary: Attach an approved public image URL to an existing SanMar Shopify product
+      description: Use for approved mockups or other product images. Set confirm true only after user approval.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                style: { type: string }
+                image_url: { type: string, format: uri }
+                alt_text: { type: [string, 'null'] }
+                confirm: { type: boolean }
+              required: [style, image_url, confirm]
+      responses:
+        '200':
+          description: Image attached
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  product_id: { type: string }
+                  admin_url: { type: string }
+                  image_url: { type: string }
+                required: [status, product_id, admin_url, image_url]
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
-  schemas:
-    ProductOverview:
-      type: object
-      properties:
-        style: { type: string }
-        title: { type: [string, 'null'] }
-        brand: { type: [string, 'null'] }
-        category: { type: [string, 'null'] }
-        subcategory: { type: [string, 'null'] }
-        description: { type: [string, 'null'] }
-        product_status: { type: [string, 'null'] }
-        variant_count: { type: integer }
-        color_count: { type: integer }
-        colors:
-          type: array
-          items: { type: string }
-        sizes:
-          type: array
-          items: { type: string }
-        pricing:
-          type: object
-          properties:
-            piece_min: { type: [number, 'null'] }
-            piece_max: { type: [number, 'null'] }
-            case_min: { type: [number, 'null'] }
-            case_max: { type: [number, 'null'] }
-            msrp_min: { type: [number, 'null'] }
-            msrp_max: { type: [number, 'null'] }
-            map_min: { type: [number, 'null'] }
-            map_max: { type: [number, 'null'] }
-        total_inventory: { type: integer }
-        inventory_by_color:
-          type: object
-          additionalProperties: { type: integer }
-        images_by_color:
-          type: object
-          additionalProperties:
-            type: object
-            properties:
-              front_model_image_url: { type: [string, 'null'] }
-              front_flat_image: { type: [string, 'null'] }
-              back_flat_image: { type: [string, 'null'] }
-              color_swatch_image: { type: [string, 'null'] }
-        spec_sheet: { type: [string, 'null'] }
-        decoration_spec_sheet: { type: [string, 'null'] }
-        product_measurements: { type: [string, 'null'] }
-      required: [style, colors, sizes, pricing, total_inventory]
-    ProductVariant:
-      type: object
-      properties:
-        unique_key: { type: [string, 'null'] }
-        style: { type: [string, 'null'] }
-        title: { type: [string, 'null'] }
-        description: { type: [string, 'null'] }
-        brand: { type: [string, 'null'] }
-        category: { type: [string, 'null'] }
-        subcategory: { type: [string, 'null'] }
-        color: { type: [string, 'null'] }
-        size: { type: [string, 'null'] }
-        qty_epdd: { type: [string, 'null'] }
-        piece_price: { type: [string, 'null'] }
-        case_price: { type: [string, 'null'] }
-        suggested_price: { type: [string, 'null'] }
-        msrp: { type: [string, 'null'] }
-        map_pricing: { type: [string, 'null'] }
-        product_status: { type: [string, 'null'] }
-        inventory_key: { type: [string, 'null'] }
-        size_index: { type: [string, 'null'] }
-        gtin: { type: [string, 'null'] }
-        front_model_image_url: { type: [string, 'null'] }
-        color_product_image: { type: [string, 'null'] }
-        front_flat_image: { type: [string, 'null'] }
-        back_flat_image: { type: [string, 'null'] }
-        color_swatch_image: { type: [string, 'null'] }
-        spec_sheet: { type: [string, 'null'] }
-        decoration_spec_sheet: { type: [string, 'null'] }
-        product_measurements: { type: [string, 'null'] }
-        pms_color: { type: [string, 'null'] }
-        total_inventory: { type: integer }
-    InventoryVariant:
-      type: object
-      properties:
-        style: { type: [string, 'null'] }
-        color: { type: [string, 'null'] }
-        size: { type: [string, 'null'] }
-        unique_key: { type: [string, 'null'] }
-        piece_price: { type: [string, 'null'] }
-        case_price: { type: [string, 'null'] }
-        discontinued_code: { type: [string, 'null'] }
-        total_quantity: { type: integer }
-        warehouses:
-          type: array
-          items:
-            type: object
-            properties:
-              warehouse: { type: [string, 'null'] }
-              quantity: { type: integer }
-    ShopifyImportResult:
-      type: object
-      properties:
-        status: { type: string }
-        shopify_status: { type: string }
-        product_id: { type: string }
-        title: { type: [string, 'null'] }
-        handle: { type: [string, 'null'] }
-        admin_url: { type: string }
-        sanmar_style: { type: string }
-        selected_colors:
-          type: array
-          items: { type: string }
-        selected_sizes:
-          type: array
-          items: { type: string }
-        variant_count: { type: integer }
-        price_mode: { type: string }
-        retail_price: { type: [number, 'null'] }
-        note: { type: string }
-      required: [status, shopify_status, product_id, admin_url, sanmar_style, variant_count]
-    ShopifyUpdateResult:
-      type: object
-      properties:
-        status: { type: string }
-        mode: { type: string }
-        product_id: { type: string }
-        admin_url: { type: string }
-        sanmar_style: { type: string }
-        existing_variant_count: { type: integer }
-        previous_variant_count: { type: integer }
-        resulting_variant_count: { type: integer }
-        added_variant_count: { type: integer }
-        removed_variant_count: { type: integer }
-        selected_colors:
-          type: array
-          items: { type: string }
-        selected_sizes:
-          type: array
-          items: { type: string }
-        retail_price: { type: [number, 'null'] }
-        note: { type: string }
-      required: [status, mode, product_id, admin_url, sanmar_style]
