@@ -21,3 +21,21 @@ services:
         value: /sanmar_dip.txt
       - key: SANMAR_CACHE_DIR
         value: /tmp/sanmar
+      - key: SHOPIFY_API_VERSION
+        value: "2026-07"
+      - key: SHOPIFY_DEFAULT_STORE
+        value: quality-image
+      - key: QUALITY_IMAGE_SHOPIFY_STORE_DOMAIN
+        sync: false
+      - key: QUALITY_IMAGE_SHOPIFY_CLIENT_ID
+        sync: false
+      - key: QUALITY_IMAGE_SHOPIFY_CLIENT_SECRET
+        sync: false
+      - key: PRESTIGE_SHOPIFY_STORE_DOMAIN
+        sync: false
+      - key: PRESTIGE_SHOPIFY_CLIENT_ID
+        sync: false
+      - key: PRESTIGE_SHOPIFY_CLIENT_SECRET
+        sync: false
+      - key: CONNECTOR_API_KEY
+        sync: false
