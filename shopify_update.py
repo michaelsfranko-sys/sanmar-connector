@@ -12,6 +12,7 @@ router = APIRouter(prefix="/shopify", tags=["Shopify Update"])
 
 
 class SanMarDraftUpdateRequest(BaseModel):
+    store: Literal["quality-image", "prestige"] = "quality-image"
     style: str = Field(min_length=1, max_length=40)
     colors: list[str] = Field(min_length=1, max_length=50)
     sizes: list[str] = Field(min_length=1, max_length=50)
@@ -20,7 +21,7 @@ class SanMarDraftUpdateRequest(BaseModel):
     confirm: bool = False
 
 
-def _existing_product(style: str):
+def _existing_product(style: str, store_key: str | None = None):
     tag = f"sanmar_style_{_safe_tag(style)}"
     query = """
     query ExistingSanMarDraft($query: String!) {
@@ -51,7 +52,7 @@ def _existing_product(style: str):
       }
     }
     """
-    data = _graphql(query, {"query": f"tag:{tag}"})
+    data = _graphql(query, {"query": f"tag:{tag}"}, store_key=store_key)
     nodes = ((data.get("products") or {}).get("nodes") or [])
     return nodes[0] if nodes else None
 
@@ -101,18 +102,20 @@ def update_sanmar_draft(
             detail="Update not confirmed. Set confirm=true only after the user approves the style, colors, sizes, and update mode.",
         )
 
+    store_key = request.store
     style = request.style.strip()
-    product = _existing_product(style)
+    product = _existing_product(style, store_key)
     if not product:
-        raise HTTPException(status_code=404, detail=f"No Shopify product tagged for SanMar style {style} was found.")
+        raise HTTPException(status_code=404, detail=f"No Shopify product tagged for SanMar style {style} was found in {store_key}.")
     if product.get("status") != "DRAFT":
         raise HTTPException(
             status_code=409,
             detail={
                 "message": "The matching Shopify product is not a draft. This endpoint only modifies DRAFT products.",
+                "store": store_key,
                 "product_id": product.get("id"),
                 "status": product.get("status"),
-                "admin_url": _product_admin_url(product.get("id")),
+                "admin_url": _product_admin_url(product.get("id"), store_key),
             },
         )
 
@@ -133,9 +136,10 @@ def update_sanmar_draft(
         if not new_rows:
             return {
                 "status": "no_change",
+                "store": store_key,
                 "mode": "add",
                 "product_id": product["id"],
-                "admin_url": _product_admin_url(product["id"]),
+                "admin_url": _product_admin_url(product["id"], store_key),
                 "sanmar_style": style,
                 "existing_variant_count": len(existing_variants),
                 "added_variant_count": 0,
@@ -168,7 +172,7 @@ def update_sanmar_draft(
           }
         }
         """
-        data = _graphql(mutation, {"productId": product["id"], "variants": inputs})
+        data = _graphql(mutation, {"productId": product["id"], "variants": inputs}, store_key=store_key)
         payload = data.get("productVariantsBulkCreate") or {}
         errors = payload.get("userErrors") or []
         if errors:
@@ -177,9 +181,10 @@ def update_sanmar_draft(
         created = payload.get("productVariants") or []
         return {
             "status": "updated",
+            "store": store_key,
             "mode": "add",
             "product_id": product["id"],
-            "admin_url": _product_admin_url(product["id"]),
+            "admin_url": _product_admin_url(product["id"], store_key),
             "sanmar_style": style,
             "existing_variant_count": len(existing_variants),
             "added_variant_count": len(created),
@@ -188,7 +193,6 @@ def update_sanmar_draft(
             "note": "Only missing requested variants were added. Existing variants were left unchanged.",
         }
 
-    # replace mode: selected SanMar combinations become the complete variant set.
     set_variants = []
     for combo, row in desired_by_combo.items():
         current = existing_by_combo.get(combo)
@@ -242,7 +246,7 @@ def update_sanmar_draft(
             "variants": set_variants,
         },
     }
-    data = _graphql(mutation, variables)
+    data = _graphql(mutation, variables, store_key=store_key)
     payload = data.get("productSet") or {}
     errors = payload.get("userErrors") or []
     updated = payload.get("product")
@@ -254,9 +258,10 @@ def update_sanmar_draft(
     added_count = len([c for c in desired_by_combo if c not in existing_by_combo])
     return {
         "status": "updated",
+        "store": store_key,
         "mode": "replace",
         "product_id": product["id"],
-        "admin_url": _product_admin_url(product["id"]),
+        "admin_url": _product_admin_url(product["id"], store_key),
         "sanmar_style": style,
         "selected_colors": colors,
         "selected_sizes": sizes,
