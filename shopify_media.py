@@ -23,6 +23,7 @@ PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "https://sanmar-connector.onr
 
 
 class AttachImageRequest(BaseModel):
+    store: Literal["quality-image", "prestige"] = "quality-image"
     style: str = Field(min_length=1, max_length=40)
     image_url: HttpUrl
     alt_text: Optional[str] = Field(default=None, max_length=255)
@@ -30,6 +31,7 @@ class AttachImageRequest(BaseModel):
 
 
 class MockupRequest(BaseModel):
+    store: Literal["quality-image", "prestige"] = "quality-image"
     style: str = Field(min_length=1, max_length=40)
     color: str = Field(min_length=1, max_length=100)
     artwork_url: HttpUrl
@@ -71,7 +73,6 @@ def _find_sanmar_image(style: str, color: str) -> tuple[str, str]:
 
 
 def _placement_box(width: int, height: int, placement: str, scale: float):
-    # Coordinates are relative to a typical front-view SanMar model/product image.
     presets = {
         "left_chest": (0.61, 0.34, 0.16, 0.14),
         "center_chest": (0.50, 0.34, 0.27, 0.16),
@@ -95,7 +96,7 @@ def _composite(garment: Image.Image, artwork: Image.Image, placement: str, scale
     return result
 
 
-def _attach_product_media(product_id: str, image_url: str, alt_text: str):
+def _attach_product_media(product_id: str, image_url: str, alt_text: str, store_key: str | None = None):
     mutation = """
     mutation AddProductMedia($product: ProductUpdateInput!, $media: [CreateMediaInput!]) {
       productUpdate(product: $product, media: $media) {
@@ -115,7 +116,7 @@ def _attach_product_media(product_id: str, image_url: str, alt_text: str):
         "product": {"id": product_id},
         "media": [{"originalSource": image_url, "alt": alt_text, "mediaContentType": "IMAGE"}],
     }
-    data = _graphql(mutation, variables)
+    data = _graphql(mutation, variables, store_key=store_key)
     payload = data.get("productUpdate") or {}
     errors = payload.get("userErrors") or []
     product = payload.get("product")
@@ -129,15 +130,16 @@ def attach_image(request: AttachImageRequest, authorization: Optional[str] = Hea
     _require_connector_key(authorization)
     if not request.confirm:
         raise HTTPException(status_code=400, detail="Image attachment not confirmed. Set confirm=true only after user approval.")
-    product = _find_existing_by_style(request.style.strip())
+    product = _find_existing_by_style(request.style.strip(), request.store)
     if not product:
-        raise HTTPException(status_code=404, detail=f"No Shopify product for SanMar style {request.style} was found.")
+        raise HTTPException(status_code=404, detail=f"No Shopify product for SanMar style {request.style} was found in {request.store}.")
     alt = request.alt_text or f"{product.get('title') or request.style} product image"
-    updated = _attach_product_media(product["id"], str(request.image_url), alt)
+    updated = _attach_product_media(product["id"], str(request.image_url), alt, request.store)
     return {
         "status": "attached",
+        "store": request.store,
         "product_id": product["id"],
-        "admin_url": _product_admin_url(product["id"]),
+        "admin_url": _product_admin_url(product["id"], request.store),
         "image_url": str(request.image_url),
         "media_count_returned": len(((updated.get("media") or {}).get("nodes") or [])),
     }
@@ -160,6 +162,7 @@ def create_mockup(request: MockupRequest, authorization: Optional[str] = Header(
 
     response = {
         "status": "created",
+        "store": request.store,
         "style": request.style,
         "color": resolved_color,
         "placement": request.placement,
@@ -171,15 +174,15 @@ def create_mockup(request: MockupRequest, authorization: Optional[str] = Header(
     if request.attach_to_shopify:
         if not request.confirm_attach:
             raise HTTPException(status_code=400, detail="Mockup was created, but Shopify attachment requires confirm_attach=true after user approval.")
-        product = _find_existing_by_style(request.style.strip())
+        product = _find_existing_by_style(request.style.strip(), request.store)
         if not product:
-            raise HTTPException(status_code=404, detail=f"Mockup was created, but no Shopify product for SanMar style {request.style} was found.")
+            raise HTTPException(status_code=404, detail=f"Mockup was created, but no Shopify product for SanMar style {request.style} was found in {request.store}.")
         alt = request.alt_text or f"{product.get('title') or request.style} - {resolved_color} - {request.placement.replace('_', ' ')} mockup"
-        _attach_product_media(product["id"], mockup_url, alt)
+        _attach_product_media(product["id"], mockup_url, alt, request.store)
         response.update({
             "attached_to_shopify": True,
             "product_id": product["id"],
-            "admin_url": _product_admin_url(product["id"]),
+            "admin_url": _product_admin_url(product["id"], request.store),
         })
 
     return response
