@@ -2,7 +2,7 @@ import html
 import os
 import re
 import secrets
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
@@ -14,6 +14,7 @@ router = APIRouter(prefix="/shopify", tags=["Shopify Import"])
 
 
 class SanMarDraftImportRequest(BaseModel):
+    store: Literal["quality-image", "prestige"] = "quality-image"
     style: str = Field(min_length=1, max_length=40)
     colors: list[str] = Field(min_length=1, max_length=50)
     sizes: list[str] = Field(min_length=1, max_length=50)
@@ -62,25 +63,20 @@ def _clean_product_title(value: Optional[str], style: str) -> str:
     if not raw:
         return f"SanMar {style}"
 
-    # SanMar titles can contain both normal HTML entities (&#174;) and malformed
-    # numeric entities (&174; / &153;). Normalize the malformed numeric forms first.
     raw = re.sub(r"&(\d{2,4});", r"&#\1;", raw)
     cleaned = html.unescape(raw)
-
-    # Keep the storefront title clean and readable; trademark symbols remain available
-    # in supplier data but are not useful in the Shopify merchandising title.
     cleaned = cleaned.replace("®", "").replace("™", "")
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned or f"SanMar {style}"
 
 
-def _product_admin_url(product_id: str) -> str:
+def _product_admin_url(product_id: str, store_key: str | None = None) -> str:
     numeric_id = product_id.rsplit("/", 1)[-1]
-    store = _shopify_settings()["store"]
+    store = _shopify_settings(store_key)["store"]
     return f"https://admin.shopify.com/store/{store.split('.')[0]}/products/{numeric_id}"
 
 
-def _find_existing_by_style(style: str):
+def _find_existing_by_style(style: str, store_key: str | None = None):
     tag = f"sanmar_style_{_safe_tag(style)}"
     query = """
     query ExistingSanMarProduct($query: String!) {
@@ -89,7 +85,7 @@ def _find_existing_by_style(style: str):
       }
     }
     """
-    data = _graphql(query, {"query": f"tag:{tag}"})
+    data = _graphql(query, {"query": f"tag:{tag}"}, store_key=store_key)
     nodes = ((data.get("products") or {}).get("nodes") or [])
     return nodes[0] if nodes else None
 
@@ -107,6 +103,7 @@ def import_sanmar_draft(
             detail="Import not confirmed. Set confirm=true only after the user has approved the selected style, colors, and sizes.",
         )
 
+    store_key = request.store
     style = request.style.strip()
     requested_colors = {_norm(c) for c in request.colors if c.strip()}
     requested_sizes = {_norm(s) for s in request.sizes if s.strip()}
@@ -114,12 +111,13 @@ def import_sanmar_draft(
         raise HTTPException(status_code=400, detail="At least one color and one size are required.")
 
     if not request.allow_duplicate:
-        existing = _find_existing_by_style(style)
+        existing = _find_existing_by_style(style, store_key)
         if existing:
             raise HTTPException(
                 status_code=409,
                 detail={
-                    "message": "A Shopify product for this SanMar style already exists.",
+                    "message": "A Shopify product for this SanMar style already exists in the selected store.",
+                    "store": store_key,
                     "existing_product": existing,
                     "hint": "Set allow_duplicate=true only if you intentionally want another Shopify product for the same SanMar style.",
                 },
@@ -212,7 +210,7 @@ def import_sanmar_draft(
       }
     }
     """
-    create_data = _graphql(create_mutation, {"product": product_input, "media": media})
+    create_data = _graphql(create_mutation, {"product": product_input, "media": media}, store_key=store_key)
     create_payload = create_data.get("productCreate") or {}
     create_errors = create_payload.get("userErrors") or []
     product = create_payload.get("product")
@@ -256,7 +254,7 @@ def import_sanmar_draft(
       }
     }
     """
-    variants_data = _graphql(variants_mutation, {"productId": product["id"], "variants": variant_inputs})
+    variants_data = _graphql(variants_mutation, {"productId": product["id"], "variants": variant_inputs}, store_key=store_key)
     variants_payload = variants_data.get("productVariantsBulkCreate") or {}
     variant_errors = variants_payload.get("userErrors") or []
     created_variants = variants_payload.get("productVariants") or []
@@ -265,19 +263,21 @@ def import_sanmar_draft(
             status_code=502,
             detail={
                 "message": "The draft product was created, but Shopify variant creation returned errors.",
+                "store": store_key,
                 "product_id": product["id"],
-                "admin_url": _product_admin_url(product["id"]),
+                "admin_url": _product_admin_url(product["id"], store_key),
                 "user_errors": variant_errors,
             },
         )
 
     return {
         "status": "created",
+        "store": store_key,
         "shopify_status": "DRAFT",
         "product_id": product["id"],
         "title": product.get("title"),
         "handle": product.get("handle"),
-        "admin_url": _product_admin_url(product["id"]),
+        "admin_url": _product_admin_url(product["id"], store_key),
         "sanmar_style": style,
         "selected_colors": colors,
         "selected_sizes": sizes,
