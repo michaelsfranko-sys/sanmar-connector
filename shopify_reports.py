@@ -27,6 +27,8 @@ def _order_line_items(order_id: str, store: StoreKey):
             name
             title
             quantity
+            currentQuantity
+            refundableQuantity
             sku
             variantTitle
             originalUnitPriceSet { shopMoney { amount currencyCode } }
@@ -54,13 +56,45 @@ def _order_line_items(order_id: str, store: StoreKey):
     return items
 
 
+def _quantity_reconciliation(item: dict, cancelled: bool):
+    ordered_quantity = int(item.get("quantity") or 0)
+    current_quantity = int(item.get("currentQuantity") or 0)
+    refundable_quantity = int(item.get("refundableQuantity") or 0)
+
+    if cancelled:
+        effective_quantity = 0
+        cancelled_quantity = ordered_quantity
+        refunded_or_removed_quantity = 0
+    else:
+        effective_quantity = max(current_quantity, 0)
+        cancelled_quantity = 0
+        refunded_or_removed_quantity = max(ordered_quantity - effective_quantity, 0)
+
+    return {
+        "ordered_quantity": ordered_quantity,
+        "current_quantity": current_quantity,
+        "refundable_quantity": refundable_quantity,
+        "refunded_or_removed_quantity": refunded_or_removed_quantity,
+        "cancelled_quantity": cancelled_quantity,
+        "effective_quantity": effective_quantity,
+    }
+
+
 def _serialize_order(order: dict, store: StoreKey):
     money = (((order.get("currentTotalPriceSet") or {}).get("shopMoney") or {}))
+    cancelled = bool(order.get("cancelledAt"))
     items = []
-    total_units = 0
+    ordered_units = 0
+    effective_units = 0
+    refunded_or_removed_units = 0
+    cancelled_units = 0
+
     for item in _order_line_items(order["id"], store):
-        quantity = int(item.get("quantity") or 0)
-        total_units += quantity
+        quantities = _quantity_reconciliation(item, cancelled)
+        ordered_units += quantities["ordered_quantity"]
+        effective_units += quantities["effective_quantity"]
+        refunded_or_removed_units += quantities["refunded_or_removed_quantity"]
+        cancelled_units += quantities["cancelled_quantity"]
         item_money = (((item.get("discountedUnitPriceAfterAllDiscountsSet") or {}).get("shopMoney") or {}))
         items.append({
             "line_item_id": item.get("id"),
@@ -69,20 +103,24 @@ def _serialize_order(order: dict, store: StoreKey):
             "variant_id": (item.get("variant") or {}).get("id"),
             "variant_title": item.get("variantTitle") or (item.get("variant") or {}).get("title"),
             "sku": item.get("sku") or (item.get("variant") or {}).get("sku"),
-            "quantity": quantity,
+            **quantities,
             "discounted_unit_price": _money(item_money.get("amount")),
             "currency": item_money.get("currencyCode") or money.get("currencyCode"),
         })
+
     return {
         "order_id": order.get("id"),
         "order_name": order.get("name"),
         "created_at": order.get("createdAt"),
-        "cancelled": bool(order.get("cancelledAt")),
+        "cancelled": cancelled,
         "financial_status": order.get("displayFinancialStatus"),
         "fulfillment_status": order.get("displayFulfillmentStatus"),
-        "current_total": _money(money.get("amount")),
+        "current_total": 0.0 if cancelled else _money(money.get("amount")),
         "currency": money.get("currencyCode"),
-        "total_units": total_units,
+        "ordered_units": ordered_units,
+        "effective_units": effective_units,
+        "refunded_or_removed_units": refunded_or_removed_units,
+        "cancelled_units": cancelled_units,
         "line_items": items,
     }
 
@@ -113,7 +151,11 @@ def recent_orders(
         "store": store,
         "count": len(orders),
         "orders": [_serialize_order(order, store) for order in orders],
-        "note": "Read-only recent order view. Line-item quantities are ordered quantities and are not refund-adjusted.",
+        "note": (
+            "Read-only recent order view. effective_quantity uses Shopify LineItem.currentQuantity, "
+            "which excludes refunded and removed units. Fully cancelled orders are forced to zero "
+            "effective units and zero reportable sales."
+        ),
     }
 
 
@@ -169,24 +211,33 @@ def orders_report(
     total_sales = 0.0
     currency = None
     cancelled_orders = 0
-    total_units = 0
+    ordered_units = 0
+    effective_units = 0
+    refunded_or_removed_units = 0
+    cancelled_units = 0
 
     for order in orders:
         money = (((order.get("currentTotalPriceSet") or {}).get("shopMoney") or {}))
-        total_sales += _money(money.get("amount"))
+        cancelled = bool(order.get("cancelledAt"))
         currency = currency or money.get("currencyCode")
-        if order.get("cancelledAt"):
+
+        if cancelled:
             cancelled_orders += 1
+        else:
+            total_sales += _money(money.get("amount"))
 
         for item in _order_line_items(order["id"], store):
-            quantity = int(item.get("quantity") or 0)
-            total_units += quantity
+            quantities = _quantity_reconciliation(item, cancelled)
+            ordered_units += quantities["ordered_quantity"]
+            effective_units += quantities["effective_quantity"]
+            refunded_or_removed_units += quantities["refunded_or_removed_quantity"]
+            cancelled_units += quantities["cancelled_quantity"]
             item_money = (((item.get("discountedUnitPriceAfterAllDiscountsSet") or {}).get("shopMoney") or {}))
             line_items.append({
                 "order_id": order.get("id"),
                 "order_name": order.get("name"),
                 "created_at": order.get("createdAt"),
-                "cancelled": bool(order.get("cancelledAt")),
+                "cancelled": cancelled,
                 "financial_status": order.get("displayFinancialStatus"),
                 "fulfillment_status": order.get("displayFulfillmentStatus"),
                 "line_item_id": item.get("id"),
@@ -195,7 +246,7 @@ def orders_report(
                 "variant_id": (item.get("variant") or {}).get("id"),
                 "variant_title": item.get("variantTitle") or (item.get("variant") or {}).get("title"),
                 "sku": item.get("sku") or (item.get("variant") or {}).get("sku"),
-                "quantity": quantity,
+                **quantities,
                 "discounted_unit_price": _money(item_money.get("amount")),
                 "currency": item_money.get("currencyCode") or currency,
             })
@@ -207,9 +258,15 @@ def orders_report(
             "product_title": key[0],
             "variant_title": key[1],
             "sku": key[2],
-            "quantity": 0,
+            "ordered_quantity": 0,
+            "effective_quantity": 0,
+            "refunded_or_removed_quantity": 0,
+            "cancelled_quantity": 0,
         })
-        row["quantity"] += item["quantity"]
+        row["ordered_quantity"] += item["ordered_quantity"]
+        row["effective_quantity"] += item["effective_quantity"]
+        row["refunded_or_removed_quantity"] += item["refunded_or_removed_quantity"]
+        row["cancelled_quantity"] += item["cancelled_quantity"]
 
     return {
         "store": store,
@@ -218,12 +275,20 @@ def orders_report(
         "shopify_query": search_query,
         "order_count": len(orders),
         "cancelled_order_count": cancelled_orders,
-        "total_units": total_units,
+        "ordered_units": ordered_units,
+        "effective_units": effective_units,
+        "refunded_or_removed_units": refunded_or_removed_units,
+        "cancelled_units": cancelled_units,
         "current_total_sales": round(total_sales, 2),
         "currency": currency,
         "grouped_items": sorted(grouped.values(), key=lambda x: (x["product_title"], x["variant_title"], x["sku"])),
         "line_items": line_items,
-        "note": "This read-only report paginates all matching orders and all line items. Quantities are ordered quantities; refund-adjusted quantity reconciliation will be added before this endpoint is used as the final purchasing source of truth.",
+        "note": (
+            "This read-only report paginates all matching orders and all line items. "
+            "effective_quantity uses Shopify LineItem.currentQuantity, which excludes refunded and removed units. "
+            "Fully cancelled orders contribute zero effective units and zero reportable sales. "
+            "Use effective_quantity for purchasing counts."
+        ),
     }
 
 
