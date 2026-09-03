@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: SanMar + Shopify Connector
-  version: 1.5.1
-  description: Search SanMar, create and update Shopify drafts, generate mockups, and attach approved images.
+  version: 1.6.0
+  description: Search SanMar, report on either Shopify store, create and update Shopify drafts, generate mockups, and attach approved images.
 servers:
   - url: https://sanmar-connector.onrender.com
 paths:
@@ -110,8 +110,8 @@ paths:
                 required: [status, epdd_cached, dip_cached]
   /shopify/health:
     get:
-      operationId: getShopifyConnectorHealth
-      summary: Verify Shopify connection and scopes
+      operationId: getDefaultShopifyConnectorHealth
+      summary: Verify the default Shopify connection and scopes
       responses:
         '200':
           description: Shopify health
@@ -119,17 +119,125 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: true
+  /shopify/health/{store_key}:
+    get:
+      operationId: getShopifyStoreHealth
+      summary: Verify one Shopify store connection and scopes
+      parameters:
+        - name: store_key
+          in: path
+          required: true
+          schema: { type: string, enum: [quality-image, prestige] }
+      responses:
+        '200':
+          description: Shopify store health
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /shopify/stores/health:
+    get:
+      operationId: getAllShopifyStoresHealth
+      summary: Verify both Shopify store connections and scopes
+      responses:
+        '200':
+          description: Health for both stores
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /shopify/orders/recent:
+    get:
+      operationId: getRecentShopifyOrders
+      summary: Get the most recent orders from a selected Shopify store
+      description: Read-only. Returns newest orders first with line items, variants, quantities, statuses, and totals.
+      parameters:
+        - name: store
+          in: query
+          required: true
+          schema: { type: string, enum: [quality-image, prestige] }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 25, default: 5 }
+      responses:
+        '200':
+          description: Recent Shopify orders
+          content:
+            application/json:
+              schema:
+                type: object
                 properties:
-                  status: { type: string }
-                  shop_name: { type: string }
-                  myshopify_domain: { type: string }
-                  access_scopes: { type: array, items: { type: string } }
-                required: [status, shop_name, myshopify_domain]
+                  store: { type: string }
+                  count: { type: integer }
+                  orders:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  note: { type: string }
+                required: [store, count, orders]
+  /shopify/orders/report:
+    get:
+      operationId: getShopifyOrdersReport
+      summary: Get a date-range order report from a selected Shopify store
+      description: Read-only. Paginates all matching orders and line items in the requested date range.
+      parameters:
+        - name: store
+          in: query
+          required: true
+          schema: { type: string, enum: [quality-image, prestige] }
+        - name: start_date
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: end_date
+          in: query
+          required: true
+          schema: { type: string, format: date }
+        - name: query
+          in: query
+          required: false
+          description: Optional additional Shopify order search filter.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Shopify order report
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /shopify/products/report:
+    get:
+      operationId: getShopifyProductsReport
+      summary: Get a product report from a selected Shopify store
+      description: Read-only. Returns products and variants from the selected store.
+      parameters:
+        - name: store
+          in: query
+          required: true
+          schema: { type: string, enum: [quality-image, prestige] }
+        - name: query
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        '200':
+          description: Shopify product report
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
   /shopify/import-sanmar-draft:
     post:
       operationId: importSanMarDraftToShopify
-      summary: Create an approved SanMar product as a Shopify DRAFT
-      description: Use only after the user approves the style, colors, and sizes. Always create as DRAFT.
+      summary: Create an approved SanMar product as a Shopify DRAFT in a selected store
+      description: Use only after the user approves the target store, style, colors, and sizes. Always create as DRAFT.
       security: [{ bearerAuth: [] }]
       requestBody:
         required: true
@@ -138,6 +246,7 @@ paths:
             schema:
               type: object
               properties:
+                store: { type: string, enum: [quality-image, prestige], default: quality-image }
                 style: { type: string }
                 colors: { type: array, minItems: 1, items: { type: string } }
                 sizes: { type: array, minItems: 1, items: { type: string } }
@@ -146,7 +255,7 @@ paths:
                 tags: { type: array, items: { type: string } }
                 confirm: { type: boolean }
                 allow_duplicate: { type: boolean, default: false }
-              required: [style, colors, sizes, confirm]
+              required: [store, style, colors, sizes, confirm]
       responses:
         '200':
           description: Draft created
@@ -154,18 +263,12 @@ paths:
             application/json:
               schema:
                 type: object
-                properties:
-                  status: { type: string }
-                  product_id: { type: string }
-                  admin_url: { type: string }
-                  sanmar_style: { type: string }
-                  variant_count: { type: integer }
-                required: [status, product_id, admin_url, sanmar_style]
+                additionalProperties: true
         '409': { description: Product already exists }
   /shopify/update-sanmar-draft:
     post:
       operationId: updateExistingSanMarDraft
-      summary: Add or replace variants on an existing SanMar Shopify DRAFT
+      summary: Add or replace variants on an existing SanMar Shopify DRAFT in a selected store
       description: Use add to preserve variants. Use replace only after explicit approval because omitted variants can be removed.
       security: [{ bearerAuth: [] }]
       requestBody:
@@ -175,13 +278,14 @@ paths:
             schema:
               type: object
               properties:
+                store: { type: string, enum: [quality-image, prestige], default: quality-image }
                 style: { type: string }
                 colors: { type: array, minItems: 1, items: { type: string } }
                 sizes: { type: array, minItems: 1, items: { type: string } }
                 mode: { type: string, enum: [add, replace], default: add }
                 retail_price: { type: [number, 'null'], minimum: 0 }
                 confirm: { type: boolean }
-              required: [style, colors, sizes, mode, confirm]
+              required: [store, style, colors, sizes, mode, confirm]
       responses:
         '200':
           description: Draft updated
@@ -189,13 +293,7 @@ paths:
             application/json:
               schema:
                 type: object
-                properties:
-                  status: { type: string }
-                  mode: { type: string }
-                  product_id: { type: string }
-                  admin_url: { type: string }
-                  sanmar_style: { type: string }
-                required: [status, mode, product_id, admin_url, sanmar_style]
+                additionalProperties: true
   /shopify/create-mockup:
     post:
       operationId: createSanMarProductMockup
@@ -209,6 +307,7 @@ paths:
             schema:
               type: object
               properties:
+                store: { type: string, enum: [quality-image, prestige], default: quality-image }
                 style: { type: string, description: SanMar style such as K500 }
                 color: { type: string }
                 artwork_url: { type: string, format: uri, description: Public PNG artwork URL; transparent background preferred }
@@ -217,7 +316,7 @@ paths:
                 attach_to_shopify: { type: boolean, default: false }
                 confirm_attach: { type: boolean, default: false }
                 alt_text: { type: [string, 'null'] }
-              required: [style, color, artwork_url, placement]
+              required: [store, style, color, artwork_url, placement]
       responses:
         '200':
           description: Mockup created and optionally attached
@@ -225,20 +324,11 @@ paths:
             application/json:
               schema:
                 type: object
-                properties:
-                  status: { type: string }
-                  style: { type: string }
-                  color: { type: string }
-                  placement: { type: string }
-                  mockup_url: { type: string }
-                  attached_to_shopify: { type: boolean }
-                  product_id: { type: [string, 'null'] }
-                  admin_url: { type: [string, 'null'] }
-                required: [status, style, color, placement, mockup_url, attached_to_shopify]
+                additionalProperties: true
   /shopify/attach-image:
     post:
       operationId: attachImageUrlToSanMarProduct
-      summary: Attach an approved public image URL to an existing SanMar Shopify product
+      summary: Attach an approved public image URL to an existing SanMar Shopify product in a selected store
       description: Use for approved mockups or other product images. Set confirm true only after user approval.
       security: [{ bearerAuth: [] }]
       requestBody:
@@ -248,11 +338,12 @@ paths:
             schema:
               type: object
               properties:
+                store: { type: string, enum: [quality-image, prestige], default: quality-image }
                 style: { type: string }
                 image_url: { type: string, format: uri }
                 alt_text: { type: [string, 'null'] }
                 confirm: { type: boolean }
-              required: [style, image_url, confirm]
+              required: [store, style, image_url, confirm]
       responses:
         '200':
           description: Image attached
@@ -260,12 +351,7 @@ paths:
             application/json:
               schema:
                 type: object
-                properties:
-                  status: { type: string }
-                  product_id: { type: string }
-                  admin_url: { type: string }
-                  image_url: { type: string }
-                required: [status, product_id, admin_url, image_url]
+                additionalProperties: true
 components:
   securitySchemes:
     bearerAuth:
