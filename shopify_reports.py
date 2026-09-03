@@ -56,7 +56,8 @@ def _order_line_items(order_id: str, store: StoreKey):
     return items
 
 
-def _product_variants(product_id: str, store: StoreKey):
+def _remaining_product_variants(product_id: str, store: StoreKey, after: str | None):
+    """Fetch only variant pages after the first embedded page from the product report query."""
     query = """
     query ProductVariants($id: ID!, $after: String) {
       product(id: $id) {
@@ -73,18 +74,16 @@ def _product_variants(product_id: str, store: StoreKey):
       }
     }
     """
-    after = None
     variants = []
-    while True:
-        data = _graphql(query, {"id": product_id, "after": after}, store_key=store)
+    cursor = after
+    while cursor:
+        data = _graphql(query, {"id": product_id, "after": cursor}, store_key=store)
         connection = ((data.get("product") or {}).get("variants") or {})
         variants.extend(connection.get("nodes") or [])
         page = connection.get("pageInfo") or {}
         if not page.get("hasNextPage"):
             break
-        after = page.get("endCursor")
-        if not after:
-            break
+        cursor = page.get("endCursor")
     return variants
 
 
@@ -337,6 +336,16 @@ def products_report(store: StoreKey, query: Optional[str] = None):
           vendor
           productType
           tags
+          variants(first: 100) {
+            nodes {
+              id
+              title
+              sku
+              price
+              inventoryQuantity
+            }
+            pageInfo { hasNextPage endCursor }
+          }
         }
         pageInfo { hasNextPage endCursor }
       }
@@ -351,7 +360,21 @@ def products_report(store: StoreKey, query: Optional[str] = None):
         connection = data.get("products") or {}
 
         for product in connection.get("nodes") or []:
-            variants = _product_variants(product["id"], store)
+            variants_connection = product.get("variants") or {}
+            variants = list(variants_connection.get("nodes") or [])
+            variant_page = variants_connection.get("pageInfo") or {}
+
+            # The first 100 variants arrive with the product page. Only products
+            # with >100 variants require additional Shopify requests.
+            if variant_page.get("hasNextPage") and variant_page.get("endCursor"):
+                variants.extend(
+                    _remaining_product_variants(
+                        product["id"],
+                        store,
+                        variant_page.get("endCursor"),
+                    )
+                )
+
             product["variants"] = {
                 "nodes": variants,
                 "pageInfo": {
@@ -375,5 +398,9 @@ def products_report(store: StoreKey, query: Optional[str] = None):
         "count": len(products),
         "variant_count": variant_count,
         "products": products,
-        "note": "This read-only report paginates all matching products and all variants for every product.",
+        "note": (
+            "This read-only report paginates all matching products and all variants. "
+            "The first 100 variants per product are fetched with each product page; "
+            "additional requests are made only for products with more than 100 variants."
+        ),
     }
