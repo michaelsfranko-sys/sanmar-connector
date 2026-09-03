@@ -54,6 +54,69 @@ def _order_line_items(order_id: str, store: StoreKey):
     return items
 
 
+def _serialize_order(order: dict, store: StoreKey):
+    money = (((order.get("currentTotalPriceSet") or {}).get("shopMoney") or {}))
+    items = []
+    total_units = 0
+    for item in _order_line_items(order["id"], store):
+        quantity = int(item.get("quantity") or 0)
+        total_units += quantity
+        item_money = (((item.get("discountedUnitPriceAfterAllDiscountsSet") or {}).get("shopMoney") or {}))
+        items.append({
+            "line_item_id": item.get("id"),
+            "product_id": (item.get("product") or {}).get("id"),
+            "product_title": (item.get("product") or {}).get("title") or item.get("title") or item.get("name"),
+            "variant_id": (item.get("variant") or {}).get("id"),
+            "variant_title": item.get("variantTitle") or (item.get("variant") or {}).get("title"),
+            "sku": item.get("sku") or (item.get("variant") or {}).get("sku"),
+            "quantity": quantity,
+            "discounted_unit_price": _money(item_money.get("amount")),
+            "currency": item_money.get("currencyCode") or money.get("currencyCode"),
+        })
+    return {
+        "order_id": order.get("id"),
+        "order_name": order.get("name"),
+        "created_at": order.get("createdAt"),
+        "cancelled": bool(order.get("cancelledAt")),
+        "financial_status": order.get("displayFinancialStatus"),
+        "fulfillment_status": order.get("displayFulfillmentStatus"),
+        "current_total": _money(money.get("amount")),
+        "currency": money.get("currencyCode"),
+        "total_units": total_units,
+        "line_items": items,
+    }
+
+
+@router.get("/orders/recent")
+def recent_orders(
+    store: StoreKey,
+    limit: int = Query(default=5, ge=1, le=25),
+):
+    gql = """
+    query RecentOrders($first: Int!) {
+      orders(first: $first, sortKey: CREATED_AT, reverse: true) {
+        nodes {
+          id
+          name
+          createdAt
+          cancelledAt
+          displayFinancialStatus
+          displayFulfillmentStatus
+          currentTotalPriceSet { shopMoney { amount currencyCode } }
+        }
+      }
+    }
+    """
+    data = _graphql(gql, {"first": limit}, store_key=store)
+    orders = (data.get("orders") or {}).get("nodes") or []
+    return {
+        "store": store,
+        "count": len(orders),
+        "orders": [_serialize_order(order, store) for order in orders],
+        "note": "Read-only recent order view. Line-item quantities are ordered quantities and are not refund-adjusted.",
+    }
+
+
 @router.get("/orders/report")
 def orders_report(
     store: StoreKey,
