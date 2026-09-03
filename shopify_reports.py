@@ -56,6 +56,38 @@ def _order_line_items(order_id: str, store: StoreKey):
     return items
 
 
+def _product_variants(product_id: str, store: StoreKey):
+    query = """
+    query ProductVariants($id: ID!, $after: String) {
+      product(id: $id) {
+        variants(first: 100, after: $after) {
+          nodes {
+            id
+            title
+            sku
+            price
+            inventoryQuantity
+          }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+    }
+    """
+    after = None
+    variants = []
+    while True:
+        data = _graphql(query, {"id": product_id, "after": after}, store_key=store)
+        connection = ((data.get("product") or {}).get("variants") or {})
+        variants.extend(connection.get("nodes") or [])
+        page = connection.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            break
+        after = page.get("endCursor")
+        if not after:
+            break
+    return variants
+
+
 def _quantity_reconciliation(item: dict, cancelled: bool):
     ordered_quantity = int(item.get("quantity") or 0)
     current_quantity = int(item.get("currentQuantity") or 0)
@@ -298,11 +330,13 @@ def products_report(store: StoreKey, query: Optional[str] = None):
     query ProductsReport($after: String, $query: String) {
       products(first: 100, after: $after, query: $query, sortKey: TITLE) {
         nodes {
-          id title handle status vendor productType tags
-          variants(first: 100) {
-            nodes { id title sku price inventoryQuantity }
-            pageInfo { hasNextPage }
-          }
+          id
+          title
+          handle
+          status
+          vendor
+          productType
+          tags
         }
         pageInfo { hasNextPage endCursor }
       }
@@ -310,14 +344,36 @@ def products_report(store: StoreKey, query: Optional[str] = None):
     """
     after = None
     products = []
+    variant_count = 0
+
     while True:
         data = _graphql(gql, {"after": after, "query": query}, store_key=store)
         connection = data.get("products") or {}
-        products.extend(connection.get("nodes") or [])
+
+        for product in connection.get("nodes") or []:
+            variants = _product_variants(product["id"], store)
+            product["variants"] = {
+                "nodes": variants,
+                "pageInfo": {
+                    "hasNextPage": False,
+                    "endCursor": None,
+                },
+            }
+            product["variant_count"] = len(variants)
+            variant_count += len(variants)
+            products.append(product)
+
         page = connection.get("pageInfo") or {}
         if not page.get("hasNextPage"):
             break
         after = page.get("endCursor")
         if not after:
             break
-    return {"store": store, "count": len(products), "products": products}
+
+    return {
+        "store": store,
+        "count": len(products),
+        "variant_count": variant_count,
+        "products": products,
+        "note": "This read-only report paginates all matching products and all variants for every product.",
+    }
