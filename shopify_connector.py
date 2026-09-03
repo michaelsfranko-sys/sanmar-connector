@@ -248,6 +248,7 @@ def _health_for_store(store_key: str | None = None):
             "write_inventory": "write_inventory" in scopes,
             "read_locations": "read_locations" in scopes,
             "read_orders": "read_orders" in scopes,
+            "read_all_orders": "read_all_orders" in scopes,
             "read_products": "read_products" in scopes,
         },
     }
