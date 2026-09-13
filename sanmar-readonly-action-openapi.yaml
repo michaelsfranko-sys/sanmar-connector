@@ -1,0 +1,99 @@
+openapi: 3.1.0
+info:
+  title: SanMar Read-Only Connector
+  version: 1.0.0
+  description: Read-only access to SanMar product data, account pricing, images, and inventory for Quality Image.
+servers:
+  - url: https://sanmar-connector.onrender.com
+paths:
+  /health:
+    get:
+      operationId: getSanMarHealth
+      summary: Check SanMar connector cache health
+      responses:
+        '200':
+          description: Connector health
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /product-overview/{style}:
+    get:
+      operationId: getSanMarProductOverview
+      summary: Get SanMar colors, sizes, account pricing ranges, images, and inventory totals for a style
+      parameters:
+        - name: style
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Product overview
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /products/{style}:
+    get:
+      operationId: getSanMarProductVariants
+      summary: Get detailed SanMar product variants and account pricing by style, optionally filtered by color and size
+      parameters:
+        - name: style
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: color
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: size
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Matching product variants
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /inventory/{style}:
+    get:
+      operationId: getSanMarInventory
+      summary: Get SanMar inventory and pricing by style, optionally filtered by color, size, and warehouse
+      parameters:
+        - name: style
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: color
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: size
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: warehouse
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Inventory results
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
